@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Classroom Mic</title>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web/dist/bundle.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: #0a0a1a;
+    color: #e2e8f0;
+    min-height: 100dvh;
+    overflow-x: hidden;
+  }
+
+  /* -- Join Screen -- */
+  #join-screen {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100dvh;
+    padding: 2rem;
+    gap: 1.5rem;
+  }
+  #join-screen h1 {
+    font-size: 1.8rem;
+    font-weight: 700;
+    color: #f8fafc;
+  }
+  #join-screen p { color: #94a3b8; font-size: 0.95rem; }
+  #name-input {
+    width: 100%;
+    max-width: 320px;
+    padding: 1rem 1.2rem;
+    font-size: 1.1rem;
+    border: 2px solid #334155;
+    border-radius: 12px;
+    background: #1e293b;
+    color: #f8fafc;
+    outline: none;
+    text-align: center;
+  }
+  #name-input:focus { border-color: #3b82f6; }
+  #join-btn {
+    width: 100%;
+    max-width: 320px;
+    padding: 1rem;
+    font-size: 1.1rem;
+    font-weight: 600;
+    border: none;
+    border-radius: 12px;
+    background: #3b82f6;
+    color: white;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  #join-btn:active { background: #2563eb; }
+  #join-btn:disabled { background: #334155; color: #64748b; cursor: not-allowed; }
+
+  /* -- Main Screen -- */
+  #main-screen { display: none; padding: 1rem; max-width: 500px; margin: 0 auto; }
+
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+    background: #141428;
+    border-radius: 12px;
+    margin-bottom: 1rem;
+  }
+  .device-name { font-weight: 700; font-size: 1.1rem; }
+  .connection-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: #22c55e;
+    display: inline-block;
+    margin-left: 0.5rem;
+  }
+
+  /* Waveform */
+  .waveform-container {
+    background: #141428;
+    border-radius: 12px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+  }
+  #waveform {
+    width: 100%;
+    height: 120px;
+    display: block;
+    border-radius: 8px;
+  }
+
+  /* Metrics */
+  .metrics-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+  }
+  .metric-card {
+    background: #141428;
+    border-radius: 12px;
+    padding: 1rem;
+    text-align: center;
+  }
+  .metric-label {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #64748b;
+    margin-bottom: 0.25rem;
+  }
+  .metric-value {
+    font-size: 1.8rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  .metric-unit { font-size: 0.85rem; color: #64748b; font-weight: 400; }
+
+  /* SNR Bar */
+  .snr-bar-container {
+    background: #141428;
+    border-radius: 12px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+  }
+  .snr-bar-track {
+    height: 20px;
+    background: #1e293b;
+    border-radius: 10px;
+    overflow: hidden;
+    position: relative;
+  }
+  .snr-bar-fill {
+    height: 100%;
+    border-radius: 10px;
+    transition: width 0.1s linear, background 0.3s;
+    width: 0%;
+    background: #3b82f6;
+  }
+
+  /* VAD Status */
+  .vad-card {
+    background: #141428;
+    border-radius: 12px;
+    padding: 1rem 1.2rem;
+    margin-bottom: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    transition: border 0.2s;
+    border: 2px solid transparent;
+  }
+  .vad-card.speaking { border-color: #22c55e; }
+  .vad-dot {
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: #334155;
+    transition: background 0.15s;
+    flex-shrink: 0;
+  }
+  .vad-dot.active {
+    background: #22c55e;
+    box-shadow: 0 0 12px #22c55e88;
+  }
+  .vad-label { font-weight: 600; flex: 1; }
+  .vad-mode { font-size: 0.8rem; color: #64748b; }
+
+  /* Winner Banner */
+  .winner-banner {
+    background: #141428;
+    border-radius: 12px;
+    padding: 1.2rem;
+    text-align: center;
+    margin-bottom: 1rem;
+    border: 2px solid transparent;
+    transition: border-color 0.3s, background 0.3s;
+  }
+  .winner-banner.active {
+    border-color: #f59e0b;
+    background: #1a1505;
+  }
+  .winner-icon { font-size: 2rem; margin-bottom: 0.25rem; }
+  .winner-text { font-weight: 700; font-size: 1.1rem; }
+  .winner-rank { color: #94a3b8; font-size: 0.9rem; margin-top: 0.25rem; }
+
+  /* Stats */
+  .stats-row {
+    display: flex;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+  }
+  .stat-pill {
+    flex: 1;
+    background: #141428;
+    border-radius: 12px;
+    padding: 0.75rem;
+    text-align: center;
+  }
+  .stat-num { font-size: 1.4rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stat-label { font-size: 0.7rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }
+
+  /* Error */
+  .error-msg {
+    background: #2d1215;
+    color: #fca5a5;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    margin-bottom: 1rem;
+    display: none;
+  }
+</style>
+</head>
+<body>
+
+<!-- ======================== JOIN SCREEN ======================== -->
+<div id="join-screen">
+  <h1>Classroom Mic</h1>
+  <p>Enter your name to join the session</p>
+  <input type="text" id="name-input" placeholder="e.g. iPad 1" autocomplete="off" autofocus>
+  <button id="join-btn" disabled>Join Session</button>
+  <div class="error-msg" id="join-error"></div>
+</div>
+
+<!-- ======================== MAIN SCREEN ======================== -->
+<div id="main-screen">
+  <div class="header">
+    <span class="device-name" id="display-name"></span>
+    <span style="color:#94a3b8;font-size:0.85rem">
+      Connected <span class="connection-dot"></span>
+    </span>
+  </div>
+
+  <div class="waveform-container">
+    <canvas id="waveform"></canvas>
+  </div>
+
+  <div class="metrics-grid">
+    <div class="metric-card">
+      <div class="metric-label">SNR</div>
+      <div class="metric-value" id="snr-value">0 <span class="metric-unit">dB</span></div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Amplitude</div>
+      <div class="metric-value" id="rms-value">0</div>
+    </div>
+  </div>
+
+  <div class="snr-bar-container">
+    <div class="metric-label" style="margin-bottom:0.5rem">Signal Strength</div>
+    <div class="snr-bar-track">
+      <div class="snr-bar-fill" id="snr-bar"></div>
+    </div>
+  </div>
+
+  <div class="vad-card" id="vad-card">
+    <div class="vad-dot" id="vad-dot"></div>
+    <div>
+      <div class="vad-label" id="vad-label">Silent</div>
+      <div class="vad-mode" id="vad-mode">Energy VAD</div>
+    </div>
+  </div>
+
+  <div class="winner-banner" id="winner-banner">
+    <div class="winner-icon" id="winner-icon">&#128266;</div>
+    <div class="winner-text" id="winner-text">Listening...</div>
+    <div class="winner-rank" id="winner-rank"></div>
+  </div>
+
+  <div class="stats-row">
+    <div class="stat-pill">
+      <div class="stat-num" id="chunks-sent">0</div>
+      <div class="stat-label">Chunks Sent</div>
+    </div>
+    <div class="stat-pill">
+      <div class="stat-num" id="chunks-won">0</div>
+      <div class="stat-label">Chunks Won</div>
+    </div>
+    <div class="stat-pill">
+      <div class="stat-num" id="devices-count">0</div>
+      <div class="stat-label">Devices</div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================== SCRIPTS ======================== -->
+<script src="/socket.io/socket.io.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  // ---------------------------------------------------------------
+  // Config
+  // ---------------------------------------------------------------
+  const METADATA_INTERVAL = 100; // ms between metadata sends
+  const SNR_SPEECH_THRESHOLD = 10; // dB above noise floor to count as speech
+  const SNR_SILENCE_THRESHOLD = 6; // dB below which speech is considered ended
+  const SPEECH_ONSET_FRAMES = 2; // consecutive frames above threshold to trigger speech (200ms)
+  const SILENCE_HANGOVER_FRAMES = 5; // consecutive frames below threshold to end speech (500ms)
+  const NOISE_FLOOR_WINDOW = 300; // frames (~30 seconds) for noise floor estimation
+  const NOISE_FLOOR_PERCENTILE = 0.1; // 10th percentile
+  const MAX_CHUNK_DURATION = 15000; // max chunk length before forced split (ms)
+  const PRE_BUFFER_MS = 300; // capture this much audio before speech onset
+  const RECORDER_TIMESLICE = 100; // MediaRecorder timeslice (ms)
+
+  // ---------------------------------------------------------------
+  // DOM
+  // ---------------------------------------------------------------
+  const joinScreen = document.getElementById("join-screen");
+  const mainScreen = document.getElementById("main-screen");
+  const nameInput = document.getElementById("name-input");
+  const joinBtn = document.getElementById("join-btn");
+  const joinError = document.getElementById("join-error");
+  const displayName = document.getElementById("display-name");
+  const waveformCanvas = document.getElementById("waveform");
+  const snrValue = document.getElementById("snr-value");
+  const rmsValue = document.getElementById("rms-value");
+  const snrBar = document.getElementById("snr-bar");
+  const vadCard = document.getElementById("vad-card");
+  const vadDot = document.getElementById("vad-dot");
+  const vadLabel = document.getElementById("vad-label");
+  const vadMode = document.getElementById("vad-mode");
+  const winnerBanner = document.getElementById("winner-banner");
+  const winnerIcon = document.getElementById("winner-icon");
+  const winnerText = document.getElementById("winner-text");
+  const winnerRank = document.getElementById("winner-rank");
+  const chunksSent = document.getElementById("chunks-sent");
+  const chunksWon = document.getElementById("chunks-won");
+  const devicesCount = document.getElementById("devices-count");
+
+  // ---------------------------------------------------------------
+  // State
+  // ---------------------------------------------------------------
+  let socket = null;
+  let deviceId = null;
+  let audioContext = null;
+  let analyser = null;
+  let mediaRecorder = null;
+  let recorderChunks = []; // { blob, time } ring buffer from MediaRecorder
+  let rmsHistory = []; // rolling window for noise floor estimation
+  let noiseFloor = 0.001; // initial estimate (will adapt)
+  let currentSnr = 0;
+  let currentRms = 0;
+
+  // VAD state machine
+  let vadState = "silent"; // 'silent' | 'speaking'
+  let useSileroVAD = false; // true if Silero loaded successfully
+  let speechOnsetCount = 0;
+  let silenceCount = 0;
+  let speechStartTime = null;
+  let chunksSentCount = 0;
+  let chunksWonCount = 0;
+  let recorderMimeType = "";
+
+  // Waveform drawing
+  const canvasCtx = waveformCanvas.getContext("2d");
+  let timeDomainData = null;
+
+  // ---------------------------------------------------------------
+  // Join flow
+  // ---------------------------------------------------------------
+  nameInput.addEventListener("input", () => {
+    joinBtn.disabled = nameInput.value.trim().length === 0;
+  });
+
+  nameInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !joinBtn.disabled) startSession();
+  });
+
+  joinBtn.addEventListener("click", startSession);
+
+  async function startSession() {
+    const name = nameInput.value.trim();
+    if (!name) return;
+
+    joinBtn.disabled = true;
+    joinBtn.textContent = "Connecting...";
+
+    try {
+      // Request mic access
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        },
+      });
+
+      // Connect to server
+      socket = io();
+      socket.emit("join", { name });
+
+      socket.on("joined", (data) => {
+        deviceId = data.deviceId;
+        displayName.textContent = name;
+        joinScreen.style.display = "none";
+        mainScreen.style.display = "block";
+        initAudio(stream);
+      });
+
+      socket.on("device-list", (list) => {
+        devicesCount.textContent = list.length;
+      });
+
+      socket.on("rank-update", (data) => {
+        updateWinnerDisplay(data);
+      });
+
+      socket.on("chunk-scored", (data) => {
+        if (data.isWinner) {
+          chunksWonCount++;
+          chunksWon.textContent = chunksWonCount;
+        }
+      });
+
+    } catch (err) {
+      joinError.style.display = "block";
+      joinError.textContent =
+        err.name === "NotAllowedError"
+          ? "Mic permission denied. Please allow microphone access and try again."
+          : "Error: " + err.message;
+      joinBtn.disabled = false;
+      joinBtn.textContent = "Join Session";
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // Audio pipeline
+  // ---------------------------------------------------------------
+  function initAudio(stream) {
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioContext.createMediaStreamSource(stream);
+
+    // Analyser for RMS / waveform
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0;
+    source.connect(analyser);
+    timeDomainData = new Float32Array(analyser.fftSize);
+
+    // MediaRecorder for audio capture
+    const mimeOptions = [
+      "audio/webm;codecs=opus",
+      "audio/webm",
+      "audio/mp4",
+      "audio/ogg;codecs=opus",
+    ];
+    recorderMimeType = mimeOptions.find((m) => MediaRecorder.isTypeSupported(m)) || "";
+    const recorderOpts = recorderMimeType ? { mimeType: recorderMimeType } : {};
+
+    mediaRecorder = new MediaRecorder(stream, recorderOpts);
+    recorderMimeType = mediaRecorder.mimeType;
+
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) {
+        recorderChunks.push({ blob: e.data, time: Date.now() });
+        // Keep ~30 seconds of chunks
+        const maxChunks = (30 * 1000) / RECORDER_TIMESLICE;
+        while (recorderChunks.length > maxChunks) recorderChunks.shift();
+      }
+    };
+
+    mediaRecorder.start(RECORDER_TIMESLICE);
+
+    // Start processing loops (metrics + energy VAD fallback)
+    setInterval(processFrame, METADATA_INTERVAL);
+    drawWaveform();
+
+    // Try to load Silero VAD (falls back to energy-based if it fails)
+    initSileroVAD();
+  }
+
+  // ---------------------------------------------------------------
+  // Silero VAD (try to load, fallback to energy-based)
+  // ---------------------------------------------------------------
+  async function initSileroVAD() {
+    if (typeof vad === "undefined" || !vad.MicVAD) {
+      console.warn("vad-web not loaded, using energy VAD");
+      vadMode.textContent = "Energy VAD";
+      return;
+    }
+
+    try {
+      vadMode.textContent = "Loading Silero...";
+
+      const micVAD = await vad.MicVAD.new({
+        positiveSpeechThreshold: 0.5,
+        negativeSpeechThreshold: 0.35,
+        redemptionFrames: 8, // ~240ms hangover
+        onSpeechStart: () => {
+          vadState = "speaking";
+          speechStartTime = Date.now() - PRE_BUFFER_MS;
+          silenceCount = 0;
+          updateVADDisplay(true);
+        },
+        onSpeechEnd: (audio) => {
+          // audio is a Float32Array from Silero, but we use MediaRecorder chunks
+          // for consistent audio format. Silero just provides timing.
+          onSpeechEnd();
+          vadState = "silent";
+          speechOnsetCount = 0;
+          silenceCount = 0;
+          updateVADDisplay(false);
+        },
+      });
+
+      micVAD.start();
+      useSileroVAD = true;
+      vadMode.textContent = "Silero VAD";
+      console.log("Silero VAD loaded successfully");
+
+    } catch (err) {
+      console.warn("Silero VAD failed to load, using energy VAD:", err.message);
+      useSileroVAD = false;
+      vadMode.textContent = "Energy VAD (Silero failed)";
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // Frame processing (every 100ms)
+  // ---------------------------------------------------------------
+  function processFrame() {
+    if (!analyser) return;
+
+    // Compute RMS
+    analyser.getFloatTimeDomainData(timeDomainData);
+    let sum = 0;
+    for (let i = 0; i < timeDomainData.length; i++) {
+      sum += timeDomainData[i] * timeDomainData[i];
+    }
+    currentRms = Math.sqrt(sum / timeDomainData.length);
+
+    // Update noise floor (10th percentile of recent RMS readings)
+    rmsHistory.push(currentRms);
+    if (rmsHistory.length > NOISE_FLOOR_WINDOW) rmsHistory.shift();
+
+    if (rmsHistory.length >= 10) {
+      const sorted = [...rmsHistory].sort((a, b) => a - b);
+      const idx = Math.floor(sorted.length * NOISE_FLOOR_PERCENTILE);
+      noiseFloor = Math.max(sorted[idx], 1e-6); // prevent zero
+    }
+
+    // Compute SNR in dB
+    currentSnr = 20 * Math.log10(currentRms / noiseFloor);
+    if (!isFinite(currentSnr) || currentSnr < 0) currentSnr = 0;
+
+    // Send metadata to server
+    if (socket && deviceId) {
+      socket.volatile.emit("metadata", {
+        snr: Math.round(currentSnr * 10) / 10,
+        rms: Math.round(currentRms * 10000) / 10000,
+        vadActive: vadState === "speaking",
+        timestamp: Date.now(),
+      });
+    }
+
+    // Run energy-based VAD (only if Silero didn't load)
+    if (!useSileroVAD) runVAD();
+
+    // Update UI
+    updateMetrics();
+  }
+
+  // ---------------------------------------------------------------
+  // Energy-based VAD
+  // ---------------------------------------------------------------
+  function runVAD() {
+    if (vadState === "silent") {
+      if (currentSnr > SNR_SPEECH_THRESHOLD) {
+        speechOnsetCount++;
+        if (speechOnsetCount >= SPEECH_ONSET_FRAMES) {
+          // Speech started
+          vadState = "speaking";
+          speechStartTime = Date.now() - PRE_BUFFER_MS; // include pre-buffer
+          silenceCount = 0;
+          updateVADDisplay(true);
+        }
+      } else {
+        speechOnsetCount = 0;
+      }
+    } else if (vadState === "speaking") {
+      if (currentSnr < SNR_SILENCE_THRESHOLD) {
+        silenceCount++;
+        if (silenceCount >= SILENCE_HANGOVER_FRAMES) {
+          // Speech ended
+          onSpeechEnd();
+          vadState = "silent";
+          speechOnsetCount = 0;
+          silenceCount = 0;
+          updateVADDisplay(false);
+        }
+      } else {
+        silenceCount = 0;
+      }
+
+      // Force-end if chunk is too long
+      if (Date.now() - speechStartTime > MAX_CHUNK_DURATION) {
+        onSpeechEnd();
+        // Start a new chunk immediately (still speaking)
+        speechStartTime = Date.now();
+        silenceCount = 0;
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // Speech end: extract and send audio chunk
+  // ---------------------------------------------------------------
+  function onSpeechEnd() {
+    const endTime = Date.now();
+    const startTime = speechStartTime;
+    if (!startTime) return;
+
+    // Extract recorder chunks that fall within the speech window
+    const relevantChunks = recorderChunks.filter(
+      (c) => c.time >= startTime - RECORDER_TIMESLICE && c.time <= endTime + RECORDER_TIMESLICE
+    );
+
+    if (relevantChunks.length === 0) return;
+
+    // Combine into a single blob
+    const audioBlob = new Blob(
+      relevantChunks.map((c) => c.blob),
+      { type: recorderMimeType }
+    );
+
+    // Convert to base64 and send
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const base64 = reader.result.split(",")[1]; // strip data:... prefix
+      if (socket && deviceId) {
+        socket.emit("audio-chunk", {
+          startTime,
+          endTime,
+          audioBase64: base64,
+          mimeType: recorderMimeType,
+        });
+        chunksSentCount++;
+        chunksSent.textContent = chunksSentCount;
+      }
+    };
+    reader.readAsDataURL(audioBlob);
+
+    speechStartTime = null;
+  }
+
+  // ---------------------------------------------------------------
+  // UI Updates
+  // ---------------------------------------------------------------
+  function updateMetrics() {
+    snrValue.innerHTML = `${Math.round(currentSnr)} <span class="metric-unit">dB</span>`;
+    rmsValue.textContent = (currentRms * 1000).toFixed(1);
+
+    // SNR bar (0 to ~40 dB range)
+    const pct = Math.min(100, Math.max(0, (currentSnr / 40) * 100));
+    snrBar.style.width = pct + "%";
+
+    // Bar color based on level
+    if (currentSnr > 20) snrBar.style.background = "#f59e0b";
+    else if (currentSnr > 10) snrBar.style.background = "#22c55e";
+    else snrBar.style.background = "#3b82f6";
+  }
+
+  function updateVADDisplay(speaking) {
+    vadDot.classList.toggle("active", speaking);
+    vadLabel.textContent = speaking ? "Speaking" : "Silent";
+    vadCard.classList.toggle("speaking", speaking);
+  }
+
+  function updateWinnerDisplay(data) {
+    if (data.isTop) {
+      winnerBanner.classList.add("active");
+      winnerIcon.textContent = "\uD83C\uDFC6"; // trophy
+      winnerText.textContent = "Top Signal!";
+    } else {
+      winnerBanner.classList.remove("active");
+      winnerIcon.textContent = "\uD83D\uDD0A"; // speaker icon
+      winnerText.textContent = "Listening...";
+    }
+    winnerRank.textContent = `Rank ${data.rank} of ${data.total}`;
+  }
+
+  // ---------------------------------------------------------------
+  // Waveform drawing
+  // ---------------------------------------------------------------
+  function drawWaveform() {
+    requestAnimationFrame(drawWaveform);
+    if (!analyser) return;
+
+    const canvas = waveformCanvas;
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    canvasCtx.scale(dpr, dpr);
+
+    const w = rect.width;
+    const h = rect.height;
+
+    // Background
+    canvasCtx.fillStyle = "#0f172a";
+    canvasCtx.fillRect(0, 0, w, h);
+
+    // Center line
+    canvasCtx.strokeStyle = "#1e293b";
+    canvasCtx.lineWidth = 1;
+    canvasCtx.beginPath();
+    canvasCtx.moveTo(0, h / 2);
+    canvasCtx.lineTo(w, h / 2);
+    canvasCtx.stroke();
+
+    // Waveform
+    analyser.getFloatTimeDomainData(timeDomainData);
+
+    const color = vadState === "speaking" ? "#22c55e" : "#3b82f6";
+    canvasCtx.strokeStyle = color;
+    canvasCtx.lineWidth = 2;
+    canvasCtx.beginPath();
+
+    const sliceWidth = w / timeDomainData.length;
+    let x = 0;
+    for (let i = 0; i < timeDomainData.length; i++) {
+      const v = timeDomainData[i];
+      const y = (v * h * 2 + h) / 2; // scale up for visibility
+      if (i === 0) canvasCtx.moveTo(x, y);
+      else canvasCtx.lineTo(x, y);
+      x += sliceWidth;
+    }
+    canvasCtx.stroke();
+
+    // Glow effect when speaking
+    if (vadState === "speaking") {
+      canvasCtx.shadowColor = "#22c55e";
+      canvasCtx.shadowBlur = 10;
+      canvasCtx.stroke();
+      canvasCtx.shadowBlur = 0;
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // Resume AudioContext on user interaction (iOS requirement)
+  // ---------------------------------------------------------------
+  document.addEventListener("touchstart", () => {
+    if (audioContext && audioContext.state === "suspended") {
+      audioContext.resume();
+    }
+  }, { once: true });
+
+})();
+</script>
+</body>
+</html>
