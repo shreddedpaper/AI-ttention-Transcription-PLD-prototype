@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashboard - Classroom Mic</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: #0a0a1a;
+    color: #e2e8f0;
+    min-height: 100vh;
+  }
+
+  /* Header */
+  .top-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 1.5rem;
+    background: #141428;
+    border-bottom: 1px solid #1e293b;
+  }
+  .top-bar h1 { font-size: 1.2rem; font-weight: 700; }
+  .top-stats {
+    display: flex; gap: 1.5rem;
+    font-size: 0.85rem; color: #94a3b8;
+  }
+  .top-stats strong { color: #e2e8f0; }
+
+  /* Layout */
+  .layout {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    padding: 1rem 1.5rem;
+    height: calc(100vh - 60px);
+  }
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; height: auto; }
+  }
+
+  .panel {
+    background: #111122;
+    border-radius: 12px;
+    border: 1px solid #1e293b;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .panel-header {
+    padding: 0.75rem 1rem;
+    font-weight: 700;
+    font-size: 0.9rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #94a3b8;
+    border-bottom: 1px solid #1e293b;
+    flex-shrink: 0;
+  }
+  .panel-body {
+    padding: 1rem;
+    overflow-y: auto;
+    flex: 1;
+  }
+
+  /* Device Grid */
+  .device-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 0.75rem;
+  }
+  .device-card {
+    background: #1a1a35;
+    border-radius: 10px;
+    padding: 0.85rem;
+    border: 2px solid transparent;
+    transition: border-color 0.2s, background 0.2s;
+    position: relative;
+  }
+  .device-card.winner {
+    border-color: #f59e0b;
+    background: #1f1a10;
+  }
+  .device-card.speaking {
+    border-color: #22c55e;
+  }
+  .device-card.winner.speaking {
+    border-color: #f59e0b;
+  }
+
+  .device-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.5rem;
+  }
+  .device-card-name {
+    font-weight: 700;
+    font-size: 0.95rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 120px;
+  }
+  .device-indicators {
+    display: flex; gap: 6px; align-items: center;
+  }
+  .indicator-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: #334155;
+    transition: background 0.15s;
+  }
+  .indicator-dot.vad-active { background: #22c55e; box-shadow: 0 0 8px #22c55e88; }
+  .indicator-dot.is-winner { background: #f59e0b; box-shadow: 0 0 8px #f59e0b88; }
+
+  .device-snr-bar {
+    height: 8px;
+    background: #0f172a;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-top: 0.25rem;
+  }
+  .device-snr-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.15s linear, background 0.3s;
+    width: 0%;
+    background: #3b82f6;
+  }
+
+  .device-snr-label {
+    font-size: 0.75rem;
+    color: #64748b;
+    margin-top: 0.3rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .device-snr-label strong {
+    color: #e2e8f0;
+    font-size: 0.85rem;
+  }
+  .device-rank {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: #64748b;
+    background: #0f172a;
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+  .device-rank.top { color: #f59e0b; background: #2a2005; }
+
+  /* Event Timeline */
+  .event-list { display: flex; flex-direction: column; gap: 0.5rem; }
+
+  .event-card {
+    background: #1a1a35;
+    border-radius: 10px;
+    padding: 0.85rem;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    border-left: 4px solid #334155;
+    transition: border-color 0.2s;
+  }
+  .event-card.high-confidence { border-left-color: #22c55e; }
+  .event-card.medium-confidence { border-left-color: #f59e0b; }
+  .event-card.low-confidence { border-left-color: #ef4444; }
+
+  .event-time {
+    font-size: 0.8rem;
+    color: #64748b;
+    font-variant-numeric: tabular-nums;
+    min-width: 80px;
+    flex-shrink: 0;
+  }
+  .event-info { flex: 1; min-width: 0; }
+  .event-winner {
+    font-weight: 700;
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+  .event-details {
+    font-size: 0.75rem;
+    color: #64748b;
+    margin-top: 0.15rem;
+  }
+  .event-confidence {
+    font-weight: 700;
+    padding: 3px 8px;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    min-width: 48px;
+    text-align: center;
+    flex-shrink: 0;
+  }
+  .conf-high { background: #0a2e1a; color: #4ade80; }
+  .conf-medium { background: #2a2005; color: #fbbf24; }
+  .conf-low { background: #2d1215; color: #f87171; }
+
+  .play-btn {
+    background: #334155;
+    border: none;
+    color: #e2e8f0;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: background 0.2s;
+    flex-shrink: 0;
+    font-size: 0.9rem;
+  }
+  .play-btn:hover { background: #475569; }
+  .play-btn:active { background: #64748b; }
+
+  /* Empty state */
+  .empty-state {
+    text-align: center;
+    color: #475569;
+    padding: 3rem 1rem;
+    font-size: 0.9rem;
+  }
+  .empty-state .icon { font-size: 2.5rem; margin-bottom: 0.75rem; }
+
+  /* Scrollbar */
+  .panel-body::-webkit-scrollbar { width: 6px; }
+  .panel-body::-webkit-scrollbar-track { background: transparent; }
+  .panel-body::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div class="top-bar">
+  <h1>Classroom Audio Monitor</h1>
+  <div class="top-stats">
+    <span>Devices: <strong id="device-count">0</strong></span>
+    <span>Events: <strong id="event-count">0</strong></span>
+    <span>Duration: <strong id="duration">0:00</strong></span>
+  </div>
+</div>
+
+<div class="layout">
+  <!-- Devices Panel -->
+  <div class="panel">
+    <div class="panel-header">Live Devices</div>
+    <div class="panel-body" id="devices-panel">
+      <div class="empty-state" id="no-devices">
+        <div class="icon">&#128225;</div>
+        Waiting for devices to connect...
+      </div>
+      <div class="device-grid" id="device-grid" style="display:none"></div>
+    </div>
+  </div>
+
+  <!-- Events Panel -->
+  <div class="panel">
+    <div class="panel-header">Speech Events</div>
+    <div class="panel-body" id="events-panel">
+      <div class="empty-state" id="no-events">
+        <div class="icon">&#127908;</div>
+        Speech events will appear here...
+      </div>
+      <div class="event-list" id="event-list" style="display:none"></div>
+    </div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  const socket = io();
+  socket.emit("join-dashboard", {});
+
+  // Join the dashboard room so server can send targeted broadcasts
+  socket.on("connect", () => {
+    socket.emit("join-dashboard");
+  });
+
+  // We use a custom event to join the dashboard "room"
+  // The server doesn't have this handler yet, so we'll use socket.io rooms differently
+  // Actually, let's just have the dashboard listen on the same events
+
+  const deviceGrid = document.getElementById("device-grid");
+  const noDevices = document.getElementById("no-devices");
+  const eventList = document.getElementById("event-list");
+  const noEvents = document.getElementById("no-events");
+  const deviceCountEl = document.getElementById("device-count");
+  const eventCountEl = document.getElementById("event-count");
+  const durationEl = document.getElementById("duration");
+
+  let startTime = Date.now();
+  let events = [];
+  let currentDevices = {};
+  let currentRankings = [];
+
+  // ---------------------------------------------------------------
+  // Duration timer
+  // ---------------------------------------------------------------
+  setInterval(() => {
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    const min = Math.floor(elapsed / 60);
+    const sec = elapsed % 60;
+    durationEl.textContent = `${min}:${sec.toString().padStart(2, "0")}`;
+  }, 1000);
+
+  // ---------------------------------------------------------------
+  // Device list updates
+  // ---------------------------------------------------------------
+  socket.on("device-list", (list) => {
+    deviceCountEl.textContent = list.length;
+    if (list.length === 0) {
+      noDevices.style.display = "block";
+      deviceGrid.style.display = "none";
+      return;
+    }
+    noDevices.style.display = "none";
+    deviceGrid.style.display = "grid";
+
+    // Add new devices, remove disconnected ones
+    const currentIds = new Set(list.map((d) => d.id));
+
+    // Remove cards for disconnected devices
+    for (const id of Object.keys(currentDevices)) {
+      if (!currentIds.has(id)) {
+        const card = document.getElementById("dev-" + id);
+        if (card) card.remove();
+        delete currentDevices[id];
+      }
+    }
+
+    // Add cards for new devices
+    for (const device of list) {
+      if (!currentDevices[device.id]) {
+        currentDevices[device.id] = device;
+        const card = createDeviceCard(device);
+        deviceGrid.appendChild(card);
+      }
+    }
+  });
+
+  function createDeviceCard(device) {
+    const card = document.createElement("div");
+    card.className = "device-card";
+    card.id = "dev-" + device.id;
+    card.innerHTML = `
+      <div class="device-card-header">
+        <div class="device-card-name">${escapeHtml(device.name)}</div>
+        <div class="device-indicators">
+          <div class="indicator-dot" id="vad-${device.id}" title="VAD"></div>
+          <div class="indicator-dot" id="win-${device.id}" title="Winner"></div>
+        </div>
+      </div>
+      <div class="device-snr-bar">
+        <div class="device-snr-fill" id="bar-${device.id}"></div>
+      </div>
+      <div class="device-snr-label">
+        SNR: <strong id="snr-${device.id}">0</strong> dB
+      </div>
+      <div class="device-rank" id="rank-${device.id}"></div>
+    `;
+    return card;
+  }
+
+  // ---------------------------------------------------------------
+  // Live state updates (every 200ms from server)
+  // ---------------------------------------------------------------
+  socket.on("live-state", (data) => {
+    const { devices: devState, rankings } = data;
+    currentRankings = rankings;
+
+    for (const [id, state] of Object.entries(devState)) {
+      const bar = document.getElementById("bar-" + id);
+      const snrLabel = document.getElementById("snr-" + id);
+      const vadDot = document.getElementById("vad-" + id);
+      const winDot = document.getElementById("win-" + id);
+      const rankLabel = document.getElementById("rank-" + id);
+      const card = document.getElementById("dev-" + id);
+
+      if (!bar) continue;
+
+      const snr = state.snr || 0;
+      const pct = Math.min(100, Math.max(0, (snr / 40) * 100));
+
+      bar.style.width = pct + "%";
+      bar.style.background =
+        snr > 20 ? "#f59e0b" : snr > 10 ? "#22c55e" : "#3b82f6";
+
+      snrLabel.textContent = snr.toFixed(1);
+
+      vadDot.classList.toggle("vad-active", state.vadActive);
+
+      // Winner status from rankings
+      const rankInfo = rankings.find((r) => r.id === id);
+      const isTop = rankInfo && rankInfo.rank === 1 && state.vadActive;
+      winDot.classList.toggle("is-winner", isTop);
+
+      if (rankInfo) {
+        rankLabel.textContent = "#" + rankInfo.rank;
+        rankLabel.classList.toggle("top", rankInfo.rank === 1);
+      } else {
+        rankLabel.textContent = "";
+      }
+
+      card.classList.toggle("winner", isTop);
+      card.classList.toggle("speaking", state.vadActive && !isTop);
+    }
+  });
+
+  // ---------------------------------------------------------------
+  // Speech events
+  // ---------------------------------------------------------------
+  socket.on("speech-event", (event) => {
+    // Update or add event
+    const existing = events.find((e) => e.id === event.id);
+    if (existing) {
+      Object.assign(existing, event);
+      updateEventCard(existing);
+    } else {
+      events.unshift(event);
+      addEventCard(event);
+    }
+
+    eventCountEl.textContent = events.length;
+    noEvents.style.display = "none";
+    eventList.style.display = "flex";
+  });
+
+  function addEventCard(event) {
+    const card = document.createElement("div");
+    card.id = "evt-" + event.id;
+    updateEventCardContent(card, event);
+    eventList.prepend(card);
+
+    // Scroll to top
+    document.getElementById("events-panel").scrollTop = 0;
+  }
+
+  function updateEventCard(event) {
+    const card = document.getElementById("evt-" + event.id);
+    if (card) updateEventCardContent(card, event);
+  }
+
+  function updateEventCardContent(card, event) {
+    const conf = event.winnerConfidence;
+    const confClass = conf >= 70 ? "high" : conf >= 40 ? "medium" : "low";
+    const confBadge = conf >= 70 ? "conf-high" : conf >= 40 ? "conf-medium" : "conf-low";
+
+    const duration = ((event.endTime - event.startTime) / 1000).toFixed(1);
+    const timeStr = formatTime(event.startTime);
+
+    // Other devices that contributed chunks
+    const others = (event.chunks || [])
+      .filter((c) => c.deviceId !== event.winnerId)
+      .map((c) => c.deviceName)
+      .join(", ");
+
+    card.className = `event-card ${confClass}-confidence`;
+    card.innerHTML = `
+      <div class="event-time">${timeStr}<br>${duration}s</div>
+      <div class="event-info">
+        <div class="event-winner">\uD83C\uDFC6 ${escapeHtml(event.winnerName)}</div>
+        <div class="event-details">
+          ${event.chunkCount} device${event.chunkCount > 1 ? "s" : ""} heard this${others ? " &middot; also: " + escapeHtml(others) : ""}
+        </div>
+      </div>
+      <div class="event-confidence ${confBadge}">${conf}%</div>
+      <button class="play-btn" onclick="playAudio('${event.id}')" title="Play">&#9654;</button>
+    `;
+
+    // Store audio data on the card for playback
+    card.dataset.audio = event.winnerAudio || "";
+    card.dataset.mime = event.winnerMimeType || "";
+  }
+
+  // ---------------------------------------------------------------
+  // Audio playback
+  // ---------------------------------------------------------------
+  let currentAudio = null;
+
+  window.playAudio = function (eventId) {
+    if (currentAudio) {
+      currentAudio.pause();
+      currentAudio = null;
+    }
+
+    const card = document.getElementById("evt-" + eventId);
+    if (!card || !card.dataset.audio) return;
+
+    const dataUrl = `data:${card.dataset.mime};base64,${card.dataset.audio}`;
+    currentAudio = new Audio(dataUrl);
+    currentAudio.play().catch((err) => console.warn("Playback failed:", err));
+  };
+
+  // ---------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------
+  function formatTime(timestamp) {
+    const elapsed = Math.floor((timestamp - startTime) / 1000);
+    if (elapsed < 0) return "0:00";
+    const min = Math.floor(elapsed / 60);
+    const sec = elapsed % 60;
+    return `${min}:${sec.toString().padStart(2, "0")}`;
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement("div");
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  // ---------------------------------------------------------------
+  // Join dashboard room
+  // ---------------------------------------------------------------
+  // The server broadcasts to "dashboard" room, so we need to join it
+  // We'll modify the server to handle this via a custom event
+  // For now, the dashboard just listens on all events
+
+})();
+</script>
+</body>
+</html>
