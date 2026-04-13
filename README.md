@@ -1,96 +1,106 @@
-# Classroom Mic
+# AI-ttention: Distributed Classroom Transcription
 
-Distributed audio capture prototype for classroom transcription research. Students join on their iPads/devices, the system detects speech, and identifies which device is closest to the speaker using SNR-based ranking.
+A system for accurately transcribing classroom discussions using students' personal devices as a distributed microphone array. Each device captures audio independently, and the system determines which device is nearest to the active speaker using signal-to-noise ratio (SNR) ranking, producing a single deduplicated audio stream suitable for downstream speech-to-text processing.
 
-## What it does
+## Motivation
 
-- Each device opens a web page, grants mic access, and starts streaming audio metrics
-- Every 100ms, each device computes its signal-to-noise ratio (SNR) and sends it to the server
-- An energy-based Voice Activity Detector (VAD) detects when someone is speaking
-- When speech ends, the audio chunk is sent to the server with timestamps
-- The server scores each chunk against all devices' SNR data during that time window
-- The device with the highest SNR score "wins" that speech segment
-- The teacher dashboard shows live device rankings and a timeline of speech events with playback
+In active classroom discussions, capturing who said what is hard. A single microphone can't cover an entire room reliably, and traditional mic arrays are expensive and inflexible. But every student already has a device with a microphone. This project treats those devices as a distributed, ad-hoc microphone array: when someone speaks, the device closest to them captures the cleanest audio, and the system identifies that device automatically.
 
-## Quick Start (Deploy to Railway)
+The long-term goal is a full pipeline: distributed capture, deduplication, transcription (via ElevenLabs Scribe v2), and speaker attribution, producing a timestamped, speaker-labelled transcript of classroom discussions in near real-time.
 
-This is the recommended approach for the Thursday experiment. No local setup needed.
+## Current State: Audio Capture Prototype
 
-### Step 1: Push to GitHub
+The current build is a working prototype focused on validating the core premise: **can we reliably identify which device is closest to a speaker using SNR-based ranking?**
 
-1. Create a GitHub account if you don't have one: https://github.com
-2. Create a new repository (e.g., `classroom-mic`)
-3. Upload all the files in this project to the repo. You can drag and drop them into the GitHub web interface.
+### How It Works
 
-### Step 2: Deploy to Railway
+Each device opens a web page in the browser, grants microphone access, and begins two parallel streams:
 
-1. Go to https://railway.com and sign up with your GitHub account
-2. Click **"New Project"**
-3. Click **"Deploy from GitHub Repo"**
-4. Select your `classroom-mic` repository
-5. Railway auto-detects Node.js and starts deploying
-6. Wait ~1-2 minutes for the build to finish
-7. Click **"Settings"** > **"Networking"** > **"Generate Domain"** to get a public URL
-8. You'll get something like `classroom-mic-production.up.railway.app`
+**Continuous metrics (every 100ms):** The device computes RMS amplitude from the mic input via the Web Audio API, maintains a rolling adaptive noise floor (10th percentile of the last 30 seconds of readings), and derives an SNR value in dB. This metadata is sent to the server continuously over WebSocket.
 
-### Step 3: Use It Thursday
+**Voice Activity Detection + audio capture:** Silero VAD runs in-browser via ONNX Runtime Web (with an energy-based fallback if ONNX fails to load). When speech is detected, the device buffers audio via MediaRecorder. When speech ends, the audio chunk is sent to the server along with its timestamps.
 
-- **iPads:** Open `https://your-app.up.railway.app` in Safari. Enter a name (e.g., "iPad 1"), tap Join, allow mic access.
-- **Teacher dashboard:** Open `https://your-app.up.railway.app/dashboard` on a laptop browser.
+**Server-side scoring:** When the server receives an audio chunk, it looks at the SNR metadata from *all* connected devices during that chunk's time window. For each 100ms frame, it ranks devices by SNR and awards points (3 for rank 1, 2 for rank 2, 1 for rank 3). The device with the highest cumulative score wins that speech segment. A confidence percentage indicates how dominant the winner was.
 
-That's it!
+**Teacher dashboard:** A monitoring interface shows all connected devices with live SNR bars, VAD indicators, and rankings. A timeline of speech events displays the winner, confidence, and includes audio playback for verification.
 
-## Running Locally (Alternative)
+### Architecture
+
+```
+Student Devices (Browser)                    Server (Node.js)
+┌──────────────────────┐                    ┌──────────────────────┐
+│ Web Audio API        │   metadata/100ms   │ Device registry      │
+│   AnalyserNode (RMS) │ ────────────────>  │ SNR buffer per device│
+│   Noise floor est.   │                    │                      │
+│   SNR computation    │                    │ On audio chunk:      │
+│                      │   audio chunks     │   Score against all  │
+│ Silero VAD (ONNX)    │ ────────────────>  │   devices' SNR data  │
+│   or Energy VAD      │                    │   Tag winner         │
+│                      │                    │                      │
+│ MediaRecorder        │   rank updates     │ Broadcast live state │
+│   Opus/AAC chunks    │ <────────────────  │   to dashboard       │
+└──────────────────────┘                    └──────────────────────┘
+                                                     │
+                                                     ▼
+                                            ┌──────────────────────┐
+                                            │ Teacher Dashboard    │
+                                            │   Live device grid   │
+                                            │   Speech event log   │
+                                            │   Audio playback     │
+                                            └──────────────────────┘
+```
+
+## Setup
+
+Requires Node.js 18+.
 
 ```bash
 npm install
 node server.js
 ```
 
-Then open `http://localhost:3000` in your browser. 
+The server starts on port 3000 (or `$PORT` if set).
 
-**Note:** For iPads to connect to a local server, they need to be on the same network AND the connection must be HTTPS (browsers require HTTPS for mic access on non-localhost origins). The Railway deployment handles HTTPS automatically, which is why it's recommended.
+For deployment, any platform that supports Node.js and WebSockets works. The project is tested with Railway. Connect the GitHub repo, deploy, generate a public domain, and devices can connect immediately via HTTPS (required for browser mic access on non-localhost origins).
 
-## How the Scoring Works
+### Usage
 
-When a device sends an audio chunk to the server, the server evaluates it:
-
-1. Look at the chunk's time window (e.g., 1.2s to 3.5s)
-2. For every 100ms frame in that window, rank ALL devices by their SNR
-3. Award points: 3 for rank 1, 2 for rank 2, 1 for rank 3, 0 for everyone else
-4. Sum the points across all frames
-5. The device with the highest total score wins that speech segment
-
-Confidence = (device's score / maximum possible score) * 100%
-
-A high confidence (>70%) means the device was consistently the loudest throughout the speech segment. Low confidence means the signal was ambiguous (speaker might have been between two devices, or moving).
-
-## Files
-
-```
-classroom-mic/
-├── package.json          # Dependencies (express + socket.io)
-├── server.js             # Node.js server with scoring logic
-├── public/
-│   ├── index.html        # iPad/device client page
-│   └── dashboard.html    # Teacher monitoring dashboard
-└── README.md             # This file
-```
+- **Devices:** Open the root URL in Chrome/Safari. Enter a device name, tap Join, and grant mic access.
+- **Dashboard:** Open `/dashboard` on a laptop browser to monitor all connected devices and review speech events.
 
 ## Technical Notes
 
-- **VAD:** Uses energy-based voice activity detection (SNR threshold). This works well for controlled experiments. For noisier environments, Silero VAD can be integrated via the `@ricky0123/vad-web` package (the code is structured to make this swap straightforward).
-- **Audio format:** Chunks are recorded via MediaRecorder. The format depends on the browser (WebM/Opus on Chrome, MP4/AAC on Safari). Both are supported for playback.
-- **Clock sync:** The prototype uses raw device timestamps. Since Apple devices sync via NTP, this is accurate enough for the experiment. For production, add a clock sync handshake.
-- **SNR normalization:** Each device computes SNR against its own rolling noise floor (10th percentile of the last 30 seconds). This makes SNR comparable across different hardware. For this experiment with identical iPads, raw amplitude would also work, but SNR is more robust.
-- **Scaling:** This prototype handles ~10-15 devices comfortably. The 200ms state broadcast and 100ms metadata streams are lightweight. For 30+ devices, you'd want to batch metadata updates and reduce broadcast frequency.
+**SNR normalisation across hardware:** Each device computes SNR relative to its own adaptive noise floor, making values comparable across different microphone hardware (iPads, MacBooks, Chromebooks) without explicit calibration.
 
-## Next Steps (After Thursday)
+**VAD strategy:** The system attempts to load Silero VAD via `@ricky0123/vad-web` (ONNX Runtime Web). If loading fails, it falls back to a simple energy-based VAD using the SNR threshold. The active mode is displayed on each device's UI.
 
-If the experiment shows the SNR ranking approach works:
+**No fixed recording intervals:** Devices don't record on a timer. Audio capture is entirely VAD-driven, producing variable-length chunks bounded by natural speech onset and offset. This minimises bandwidth and ensures chunks align with actual utterances.
 
-1. **Add STT:** Send winning audio chunks to ElevenLabs Scribe v2 for transcription
-2. **Adaptive keyterms:** Feed lesson-specific vocabulary to Scribe v2's keyterm prompting
-3. **Silero VAD:** Swap in neural VAD for better speech boundary detection
-4. **Speaker diarization:** Use Scribe v2's built-in diarization or pyannote.audio for voice-based speaker identification
-5. **Cross-correlation dedup:** For the full multi-device system, add audio fingerprinting to detect when multiple devices captured the same utterance
+**Clock alignment:** Devices use their local clocks for timestamps. Apple and most modern devices sync via NTP, so timestamps are sufficiently aligned for the scoring window comparisons. For production use, a server-side clock sync handshake would improve precision.
+
+**Audio format:** MediaRecorder output format is browser-dependent (WebM/Opus on Chrome, MP4/AAC on Safari). Both are supported for playback on the dashboard.
+
+## Planned Pipeline
+
+The full system design (documented separately) extends this prototype with:
+
+- **ElevenLabs Scribe v2** for speech-to-text, with built-in speaker diarisation (up to 32 speakers) and adaptive keyterm prompting using lesson-specific vocabulary
+- **Cross-correlation deduplication** for matching overlapping captures across devices at the audio signal level
+- **Voice embedding enrolment** for robust speaker identification independent of device proximity
+- **Source separation** (e.g. Meta Demucs) for handling simultaneous speakers
+
+## Stack
+
+| Component | Technology |
+|---|---|
+| Server | Node.js, Express, Socket.io |
+| Client audio | Web Audio API, MediaRecorder |
+| Voice activity detection | Silero VAD (ONNX Runtime Web) with energy-based fallback |
+| Transport | WebSocket (Socket.io) |
+| Target STT (planned) | ElevenLabs Scribe v2 |
+| Target diarisation (planned) | Scribe v2 built-in + pyannote.audio 4.0 |
+
+## License
+
+MIT
+
