@@ -307,8 +307,6 @@
   const NOISE_FLOOR_WINDOW = 300; // frames (~30 seconds) for noise floor estimation
   const NOISE_FLOOR_PERCENTILE = 0.1; // 10th percentile
   const MAX_CHUNK_DURATION = 15000; // max chunk length before forced split (ms)
-  const PRE_BUFFER_MS = 300; // capture this much audio before speech onset
-  const RECORDER_TIMESLICE = 100; // MediaRecorder timeslice (ms)
 
   // ---------------------------------------------------------------
   // DOM
@@ -342,8 +340,8 @@
   let deviceId = null;
   let audioContext = null;
   let analyser = null;
-  let mediaRecorder = null;
-  let recorderChunks = []; // { blob, time } ring buffer from MediaRecorder
+  let currentStream = null;
+  let currentMimeType = "";
   let rmsHistory = []; // rolling window for noise floor estimation
   let noiseFloor = 0.001; // initial estimate (will adapt)
   let currentSnr = 0;
@@ -354,10 +352,11 @@
   let useSileroVAD = false; // true if Silero loaded successfully
   let speechOnsetCount = 0;
   let silenceCount = 0;
-  let speechStartTime = null;
   let chunksSentCount = 0;
   let chunksWonCount = 0;
-  let recorderMimeType = "";
+  let segmentRecorder = null;
+  let segmentChunks = [];
+  let pendingSegmentStart = null;
 
   // Waveform drawing
   const canvasCtx = waveformCanvas.getContext("2d");
@@ -435,6 +434,7 @@
   // Audio pipeline
   // ---------------------------------------------------------------
   function initAudio(stream) {
+    currentStream = stream;
     audioContext = new (window.AudioContext || window.webkitAudioContext)();
     const source = audioContext.createMediaStreamSource(stream);
 
@@ -445,29 +445,14 @@
     source.connect(analyser);
     timeDomainData = new Float32Array(analyser.fftSize);
 
-    // MediaRecorder for audio capture
+    // Detect supported MIME type for per-segment MediaRecorder instances
     const mimeOptions = [
       "audio/webm;codecs=opus",
       "audio/webm",
       "audio/mp4",
       "audio/ogg;codecs=opus",
     ];
-    recorderMimeType = mimeOptions.find((m) => MediaRecorder.isTypeSupported(m)) || "";
-    const recorderOpts = recorderMimeType ? { mimeType: recorderMimeType } : {};
-
-    mediaRecorder = new MediaRecorder(stream, recorderOpts);
-    recorderMimeType = mediaRecorder.mimeType;
-
-    mediaRecorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) {
-        recorderChunks.push({ blob: e.data, time: Date.now() });
-        // Keep ~30 seconds of chunks
-        const maxChunks = (30 * 1000) / RECORDER_TIMESLICE;
-        while (recorderChunks.length > maxChunks) recorderChunks.shift();
-      }
-    };
-
-    mediaRecorder.start(RECORDER_TIMESLICE);
+    currentMimeType = mimeOptions.find((m) => MediaRecorder.isTypeSupported(m)) || "";
 
     // Start processing loops (metrics + energy VAD fallback)
     setInterval(processFrame, METADATA_INTERVAL);
@@ -496,14 +481,12 @@
         redemptionFrames: 8, // ~240ms hangover
         onSpeechStart: () => {
           vadState = "speaking";
-          speechStartTime = Date.now() - PRE_BUFFER_MS;
           silenceCount = 0;
+          startSegmentRecording();
           updateVADDisplay(true);
         },
-        onSpeechEnd: (audio) => {
-          // audio is a Float32Array from Silero, but we use MediaRecorder chunks
-          // for consistent audio format. Silero just provides timing.
-          onSpeechEnd();
+        onSpeechEnd: () => {
+          stopSegmentRecording();
           vadState = "silent";
           speechOnsetCount = 0;
           silenceCount = 0;
@@ -578,8 +561,8 @@
         if (speechOnsetCount >= SPEECH_ONSET_FRAMES) {
           // Speech started
           vadState = "speaking";
-          speechStartTime = Date.now() - PRE_BUFFER_MS; // include pre-buffer
           silenceCount = 0;
+          startSegmentRecording();
           updateVADDisplay(true);
         }
       } else {
@@ -590,7 +573,7 @@
         silenceCount++;
         if (silenceCount >= SILENCE_HANGOVER_FRAMES) {
           // Speech ended
-          onSpeechEnd();
+          stopSegmentRecording();
           vadState = "silent";
           speechOnsetCount = 0;
           silenceCount = 0;
@@ -601,54 +584,55 @@
       }
 
       // Force-end if chunk is too long
-      if (Date.now() - speechStartTime > MAX_CHUNK_DURATION) {
-        onSpeechEnd();
-        // Start a new chunk immediately (still speaking)
-        speechStartTime = Date.now();
+      if (pendingSegmentStart && Date.now() - pendingSegmentStart > MAX_CHUNK_DURATION) {
+        stopSegmentRecording();
+        // Start a new segment immediately (still speaking)
+        startSegmentRecording();
         silenceCount = 0;
       }
     }
   }
 
   // ---------------------------------------------------------------
-  // Speech end: extract and send audio chunk
+  // Per-segment recording: fresh MediaRecorder per speech segment
   // ---------------------------------------------------------------
-  function onSpeechEnd() {
-    const endTime = Date.now();
-    const startTime = speechStartTime;
-    if (!startTime) return;
+  // NOTE: Pre-buffering (capturing audio before VAD triggers) is not
+  // possible with this approach since recording starts at speech onset.
+  // The trade-off is worth it: each segment is a complete, valid media
+  // file with proper headers, fixing playback on the dashboard.
 
-    // Extract recorder chunks that fall within the speech window
-    const relevantChunks = recorderChunks.filter(
-      (c) => c.time >= startTime - RECORDER_TIMESLICE && c.time <= endTime + RECORDER_TIMESLICE
-    );
-
-    if (relevantChunks.length === 0) return;
-
-    // Combine into a single blob
-    const audioBlob = new Blob(
-      relevantChunks.map((c) => c.blob),
-      { type: recorderMimeType }
-    );
-
-    // Convert to base64 and send
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const base64 = reader.result.split(",")[1]; // strip data:... prefix
-      if (socket && deviceId) {
-        socket.emit("audio-chunk", {
-          startTime,
-          endTime,
-          audioBase64: base64,
-          mimeType: recorderMimeType,
-        });
-        chunksSentCount++;
-        chunksSent.textContent = chunksSentCount;
-      }
+  function startSegmentRecording() {
+    segmentChunks = [];
+    pendingSegmentStart = Date.now();
+    const opts = currentMimeType ? { mimeType: currentMimeType } : {};
+    segmentRecorder = new MediaRecorder(currentStream, opts);
+    segmentRecorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) segmentChunks.push(e.data);
     };
-    reader.readAsDataURL(audioBlob);
+    segmentRecorder.start();
+  }
 
-    speechStartTime = null;
+  function stopSegmentRecording() {
+    if (!segmentRecorder || segmentRecorder.state === "inactive") return;
+    const startTime = pendingSegmentStart;
+    const endTime = Date.now();
+    const mimeType = segmentRecorder.mimeType || currentMimeType;
+
+    segmentRecorder.onstop = () => {
+      const audioBlob = new Blob(segmentChunks, { type: mimeType });
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const base64 = reader.result.split(",")[1];
+        if (socket && deviceId) {
+          socket.emit("audio-chunk", { startTime, endTime, audioBase64: base64, mimeType });
+          chunksSentCount++;
+          chunksSent.textContent = chunksSentCount;
+        }
+      };
+      reader.readAsDataURL(audioBlob);
+    };
+    segmentRecorder.stop();
+    pendingSegmentStart = null;
   }
 
   // ---------------------------------------------------------------
